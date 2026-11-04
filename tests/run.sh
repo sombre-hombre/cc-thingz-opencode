@@ -13,7 +13,7 @@ cp -a "$ROOT/plugins" "$ROOT/scripts" "$ROOT/tests" "$ROOT/commands" "$ROOT/inte
 printf 'Isolated test run: %s\n' "$RUN"
 
 failed=0
-for dependency in bash git python3 hg; do
+for dependency in bash git python3 hg glab zsh node; do
     if ! command -v "$dependency" > /dev/null 2>&1; then
         printf 'MISSING dependency: %s (coverage incomplete)\n' "$dependency"
         failed=$((failed + 1))

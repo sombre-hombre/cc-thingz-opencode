@@ -198,8 +198,11 @@ distinct states. Counters are integers ≥0; plans_dir is a safe project-relativ
 
 ## Tests and publication checks
 
-Install Mercurial, zsh and GNU coreutils for the complete test suite, in addition to
-the runtime prerequisites. With the pinned npm dependencies installed:
+Install Mercurial, glab, zsh and GNU coreutils for the complete test suite, in addition to
+the runtime prerequisites. GitLab/release fixtures exercise the real CLI against a
+local HTTP server; authentication is not needed. CI installs glab 1.124.0 from the
+official release with checksum verification on both Linux and macOS.
+With the pinned npm dependencies installed:
 
 ```sh
 python3 tests/check-port.py

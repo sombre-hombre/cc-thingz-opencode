@@ -35,6 +35,8 @@ jobs:
             brew list coreutils >/dev/null 2>&1 || brew install coreutils
           fi
           npm --prefix integrations/opencode/skill-eval ci --ignore-scripts --no-audit --no-fund
+      - name: Install tested glab CLI
+        run: bash .github/install-glab.sh
       - name: Package graph
         run: python3 tests/check-port.py
       - name: Isolated suite (no models or user configuration)
