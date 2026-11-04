@@ -28,6 +28,9 @@ Unique run directories are created by mktemp/tempfile and are not publication fi
 
 ## Verification boundaries
 
+- The regular suite passed on Linux during public-copy preparation: 24 shell
+  suites and two self-tests, including isolated install/restore and new portability
+  and publication regressions. Native macOS results remain unverified until CI runs.
 - Regular tests use real local Git/filesystem/process operations and synthetic
   terminal, clipboard, Codex and GitLab fixtures; they do not publish or log in.
 - Darwin contract fixtures validate API selection/flags/error handling and native

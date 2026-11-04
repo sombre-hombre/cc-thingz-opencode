@@ -8,8 +8,8 @@
 - [x] Add Linux/macOS CI and privacy regression checks.
 - [x] Run the available Linux tests and independent secret scanning. The two entropy
   findings are the public pinned upstream commit and MIT-license checksum, not credentials.
-- [ ] Inspect the complete newly committed public Git history.
-- [ ] Create clean commits as sombre-hombre using the GitHub noreply address.
+- [x] Inspect the complete newly committed public Git history with the offline audit.
+- [x] Create clean commits as sombre-hombre using the GitHub noreply address.
 
 This checklist describes preparation only. No GitHub publication or user-level
 installation is performed by preparing this copy. Actual macOS results must not
