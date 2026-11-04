@@ -37,6 +37,10 @@ Unique run directories are created by mktemp/tempfile and are not publication fi
   Kitty dispatch policy from a Linux host. They are not actual macOS acceptance.
 - A Linux/macOS GitHub Actions matrix is provided. Its presence alone is **not** a
   statement that either remote job has already passed.
+- The macOS CI job currently targets `macos-15-intel`. ARM64 hosted capacity can
+  prevent `macos-latest` from starting at all; an unassigned/cancelled job is not a
+  test failure or a pass. Native Apple Silicon execution remains unverified until
+  a separate ARM64 run succeeds.
 - Real terminal interaction, clipboard contents, authenticated GitLab operations
   and model workflows need explicit manual/opt-in checks on the target system.
 - Optional `tests/smoke/` tools can create real sessions and model requests after
