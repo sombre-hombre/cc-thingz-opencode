@@ -1,0 +1,41 @@
+name: Linux and macOS
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Test dependencies
+        run: |
+          python3 -m pip install mercurial
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y zsh
+          else
+            brew list coreutils >/dev/null 2>&1 || brew install coreutils
+          fi
+          npm --prefix integrations/opencode/skill-eval ci --ignore-scripts --no-audit --no-fund
+      - name: Package graph
+        run: python3 tests/check-port.py
+      - name: Isolated suite (no models or user configuration)
+        run: bash tests/run.sh
+      - name: Publication hygiene
+        run: python3 scripts/check-public.py

@@ -1,0 +1,19 @@
+{
+  "project": {"id": 73, "path_with_namespace": "team/platform/service", "merge_method": "ff", "squash_option": "default_off", "web_url": "https://gitlab.example.test/team/platform/service"},
+  "user": {"id": 9, "username": "reviewer"},
+  "mr": {"id": 9001, "iid": 42, "project_id": 73, "target_project_id": 73, "source_project_id": 88, "title": "Add retry", "description": "Fix #42", "state": "opened", "draft": false, "source_branch": "retry", "target_branch": "main", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "diff_refs": {"base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "start_sha": "cccccccccccccccccccccccccccccccccccccccc", "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "detailed_merge_status": "ci_still_running", "has_conflicts": false, "blocking_discussions_resolved": false, "changes_count": "1000+", "head_pipeline": {"id": 501, "iid": 3, "project_id": 88, "status": "running", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+  "issue": {"id": 8002, "iid": 42, "project_id": 73, "title": "Retries missing", "description": "Report", "state": "opened", "labels": ["bug"], "author": {"id": 8, "username": "author"}},
+  "notes": [
+    [{"id": 101, "body": "already raised by user", "author": {"id": 9, "username": "reviewer"}, "created_at": "2026-11-01T12:00:00Z", "system": false}],
+    [{"id": 102, "body": "added a commit", "author": {"id": 8}, "system": true}]
+  ],
+  "discussions": [
+    [{"id": "resolved-thread", "individual_note": false, "notes": [{"id": 103, "body": "old issue fixed", "author": {"id": 9}, "resolvable": true, "resolved": true, "resolved_by": {"id": 8}, "resolved_at": "2026-11-02T12:00:00Z"}]}],
+    [{"id": "bot-thread", "individual_note": false, "notes": [{"id": 104, "type": "DiffNote", "body": "```suggestion\nreturn retry(err)\n```", "author": {"id": 11, "username": "bot", "bot": true}, "created_at": "2026-11-03T12:00:00Z", "resolvable": true, "resolved": false, "position": {"old_path": "old file.py", "new_path": "new file.py", "old_line": null, "new_line": 27, "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "start_sha": "cccccccccccccccccccccccccccccccccccccccc", "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "suggestions": [{"id": 66, "from_line": 27, "to_line": 27, "appliable": true, "applied": false, "from_content": "pass", "to_content": "return retry(err)"}]}]}]
+  ],
+  "diffs": [[{"old_path": "old file.py", "new_path": "new file.py", "renamed_file": true, "diff": "@@ -1 +1 @@\n-pass\n+return retry(err)"}], [{"old_path": "huge.py", "new_path": "huge.py", "too_large": true, "collapsed": true, "diff": ""}]],
+  "commits": [[{"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "title": "wip"}], [{"id": "dddddddddddddddddddddddddddddddddddddddd", "title": "fix lint"}]],
+  "pipelines": [[{"id": 501, "iid": 3, "project_id": 88, "status": "running", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]],
+  "approvals": {"approved": false, "approved_by": [], "user_can_approve": false, "user_has_approved": false},
+  "approval_state": {"rules": [{"id": 2, "name": "maintainers", "approved": false, "approvals_required": 1}]}
+}

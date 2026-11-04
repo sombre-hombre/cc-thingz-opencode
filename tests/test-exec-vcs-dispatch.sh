@@ -1,0 +1,1030 @@
+#!/bin/bash
+# automated tests for VCS dispatch in all four exec scripts
+# covers detect-branch.sh, create-branch.sh, stage-and-commit.sh, run-codex.sh
+# (git + hg paths) plus non-VCS exit-code propagation via set -e
+# scaffolds temp git and hg repos and asserts expected outputs
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+EXEC_SCRIPTS_DIR="$REPO_ROOT/plugins/planning/skills/exec/scripts"
+DETECT_BRANCH="$EXEC_SCRIPTS_DIR/detect-branch.sh"
+CREATE_BRANCH="$EXEC_SCRIPTS_DIR/create-branch.sh"
+STAGE_AND_COMMIT="$EXEC_SCRIPTS_DIR/stage-and-commit.sh"
+RUN_CODEX="$EXEC_SCRIPTS_DIR/run-codex.sh"
+MOVE_PLAN="$EXEC_SCRIPTS_DIR/move-plan.sh"
+
+passed=0
+failed=0
+
+# safety: verify dirs are under a recognised temp base before allowing any rm operations
+assert_temp_dir() {
+    local dir="$1"
+    local tmpbase="${TMPDIR:-/tmp}"
+    tmpbase="${tmpbase%/}"
+    case "$dir" in
+    "$tmpbase"/*) ;;
+    /tmp/*) ;;
+    /private/tmp/*) ;;
+    /private/var/*) ;;
+    /var/folders/*) ;;
+    *)
+        echo "FATAL: $dir is not under a recognised temp base, refusing to proceed" >&2
+        exit 1
+        ;;
+    esac
+}
+
+# every scratch dir lives under one root: mk_tmp runs inside command
+# substitutions, so a dir recorded in an array there would not survive the
+# subshell and cleanup would miss it
+TMP_ROOT="$(mktemp -d)"
+assert_temp_dir "$TMP_ROOT"
+
+mk_tmp() {
+    mktemp -d "$TMP_ROOT/scratch-XXXXXX"
+}
+
+cleanup() {
+    rm -rf "$TMP_ROOT"
+    return 0
+}
+trap cleanup EXIT
+
+assert_output() {
+    local test_name="$1"
+    local expected="$2"
+    local actual="$3"
+    if [ "$expected" = "$actual" ]; then
+        echo "  PASS: $test_name"
+        passed=$((passed + 1))
+    else
+        echo "  FAIL: $test_name"
+        echo "    expected: $(printf '%q' "$expected")"
+        echo "    actual:   $(printf '%q' "$actual")"
+        failed=$((failed + 1))
+    fi
+}
+
+assert_exit_nonzero() {
+    local test_name="$1"
+    local actual_rc="$2"
+    if [ "$actual_rc" -ne 0 ]; then
+        echo "  PASS: $test_name"
+        passed=$((passed + 1))
+    else
+        echo "  FAIL: $test_name (expected non-zero exit, got 0)"
+        failed=$((failed + 1))
+    fi
+}
+
+# assertion helper: checks a string contains a substring
+assert_contains() {
+    local test_name="$1"
+    local haystack="$2"
+    local needle="$3"
+    case "$haystack" in
+    *"$needle"*)
+        echo "  PASS: $test_name"
+        passed=$((passed + 1))
+        ;;
+    *)
+        echo "  FAIL: $test_name"
+        echo "    expected substring: $(printf '%q' "$needle")"
+        echo "    in:                 $(printf '%q' "$haystack")"
+        failed=$((failed + 1))
+        ;;
+    esac
+}
+
+# assertion helper: checks a string does NOT contain a substring
+assert_not_contains() {
+    local test_name="$1"
+    local haystack="$2"
+    local needle="$3"
+    case "$haystack" in
+    *"$needle"*)
+        echo "  FAIL: $test_name"
+        echo "    unexpected substring: $(printf '%q' "$needle")"
+        echo "    in:                   $(printf '%q' "$haystack")"
+        failed=$((failed + 1))
+        ;;
+    *)
+        echo "  PASS: $test_name"
+        passed=$((passed + 1))
+        ;;
+    esac
+}
+
+HG_AVAILABLE=1
+if ! command -v hg >/dev/null 2>&1; then
+    HG_AVAILABLE=0
+    echo "note: hg not available, skipping hg-specific cases"
+fi
+
+# make git operations hermetic — no user hooks / signing / global config interference
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+export GIT_AUTHOR_NAME="Test"
+export GIT_AUTHOR_EMAIL="test@example.com"
+export GIT_COMMITTER_NAME="Test"
+export GIT_COMMITTER_EMAIL="test@example.com"
+
+# hg hermeticity — isolate from user config
+export HGRCPATH=/dev/null
+export HGUSER="Test <test@example.com>"
+
+# helper: init a git repo on a given branch name, seed refs/remotes/origin/HEAD
+# so detect-branch.sh always takes the cached-remote path
+make_git_repo() {
+    local dir="$1"
+    local default_branch="$2"
+    git -C "$dir" init -q -b "$default_branch"
+    git -C "$dir" commit --allow-empty -q -m "initial"
+    git -C "$dir" remote add origin "https://example.invalid/x.git"
+    git -C "$dir" symbolic-ref "refs/remotes/origin/HEAD" "refs/remotes/origin/$default_branch"
+}
+
+make_hg_repo() {
+    local dir="$1"
+    hg init "$dir" >/dev/null
+}
+
+echo "testing VCS dispatch: detect-branch.sh"
+echo "======================================"
+
+# test 1: git repo on main -> outputs main
+echo ""
+echo "test 1: git repo with main as default"
+GIT_MAIN="$(mk_tmp)"
+make_git_repo "$GIT_MAIN" main
+output="$(cd "$GIT_MAIN" && bash "$DETECT_BRANCH")"
+assert_output "git repo on main outputs 'main'" "main" "$output"
+
+# test 2: git repo on master -> outputs master
+echo ""
+echo "test 2: git repo with master as default"
+GIT_MASTER="$(mk_tmp)"
+make_git_repo "$GIT_MASTER" master
+output="$(cd "$GIT_MASTER" && bash "$DETECT_BRANCH")"
+assert_output "git repo on master outputs 'master'" "master" "$output"
+
+# test 3: vanilla hg repo with no remote refs -> outputs 'default' fallback
+if [ "$HG_AVAILABLE" -eq 1 ]; then
+    echo ""
+    echo "test 3: hg repo with no remote/<name> refs falls back to 'default'"
+    HG_REPO="$(mk_tmp)"
+    make_hg_repo "$HG_REPO"
+    output="$(cd "$HG_REPO" && bash "$DETECT_BRANCH")"
+    assert_output "hg repo without remote refs outputs 'default'" "default" "$output"
+
+    # test 3b: hg repo that exposes remote/master as a revset -> outputs 'remote/master'.
+    # vanilla hg does not ship a remote-tracking-ref layout out of the box, so we
+    # simulate one via a [revsetalias] entry that resolves remote/master to an
+    # existing bookmark. the patched do_hg probes `present(remote/<name>)`, which
+    # accepts any revset that resolves, so the alias is a faithful stand-in for
+    # modern-Mercurial environments that expose remote-tracking refs natively.
+    echo ""
+    echo "test 3b: hg repo with remote/master as a revset outputs 'remote/master'"
+    HG_REMOTE_MASTER="$(mk_tmp)"
+    make_hg_repo "$HG_REMOTE_MASTER"
+    (
+        cd "$HG_REMOTE_MASTER"
+        cat >>.hg/hgrc <<'HGRC'
+[revsetalias]
+remote/master = bookmark("master")
+HGRC
+        echo seed >seed.txt
+        hg add seed.txt >/dev/null
+        hg commit -m seed >/dev/null
+        hg book master >/dev/null
+    )
+    output="$(cd "$HG_REMOTE_MASTER" && bash "$DETECT_BRANCH")"
+    assert_output "hg repo with remote/master outputs 'remote/master'" "remote/master" "$output"
+
+    # test 3c: hg repo with remote/main but not remote/master -> outputs 'remote/main'
+    # exercises the candidate-order fallthrough when the first candidate is absent.
+    echo ""
+    echo "test 3c: hg repo with only remote/main outputs 'remote/main'"
+    HG_REMOTE_MAIN="$(mk_tmp)"
+    make_hg_repo "$HG_REMOTE_MAIN"
+    (
+        cd "$HG_REMOTE_MAIN"
+        cat >>.hg/hgrc <<'HGRC'
+[revsetalias]
+remote/main = bookmark("main")
+HGRC
+        echo seed >seed.txt
+        hg add seed.txt >/dev/null
+        hg commit -m seed >/dev/null
+        hg book main >/dev/null
+    )
+    output="$(cd "$HG_REMOTE_MAIN" && bash "$DETECT_BRANCH")"
+    assert_output "hg repo with only remote/main outputs 'remote/main'" "remote/main" "$output"
+fi
+
+echo ""
+echo "testing VCS dispatch: create-branch.sh"
+echo "======================================"
+
+PLAN_FILE_DATED="docs/plans/20260329-feature-name.md"
+EXPECTED_DERIVED_BRANCH="feature-name"
+
+# test 4: git repo on main with dated plan -> creates and outputs derived branch name
+echo ""
+echo "test 4: git repo on main, plan with date prefix -> creates feature branch"
+GIT_CB_MAIN="$(mk_tmp)"
+make_git_repo "$GIT_CB_MAIN" main
+output="$(cd "$GIT_CB_MAIN" && bash "$CREATE_BRANCH" "$PLAN_FILE_DATED" 2>/dev/null | tail -n 1)"
+assert_output "git/main: outputs derived branch name" "$EXPECTED_DERIVED_BRANCH" "$output"
+current="$(git -C "$GIT_CB_MAIN" branch --show-current)"
+assert_output "git/main: actually switched to new branch" "$EXPECTED_DERIVED_BRANCH" "$current"
+
+# test 5: git repo already on feature branch -> outputs current branch, no switch
+echo ""
+echo "test 5: git repo already on feature branch -> outputs current, no switch"
+GIT_CB_FEAT="$(mk_tmp)"
+make_git_repo "$GIT_CB_FEAT" main
+git -C "$GIT_CB_FEAT" checkout -q -b existing-feature
+output="$(cd "$GIT_CB_FEAT" && bash "$CREATE_BRANCH" "$PLAN_FILE_DATED" 2>/dev/null | tail -n 1)"
+assert_output "git/existing-feature: outputs current branch" "existing-feature" "$output"
+current="$(git -C "$GIT_CB_FEAT" branch --show-current)"
+assert_output "git/existing-feature: still on existing-feature" "existing-feature" "$current"
+
+# test 5b: --print-name derives the branch name with NO git side effects.
+# the exec SKILL uses this in worktree mode so the main tree is never touched.
+echo ""
+echo "test 5b: --print-name outputs derived name and does NOT create/switch a branch"
+GIT_PN="$(mk_tmp)"
+make_git_repo "$GIT_PN" main
+output="$(cd "$GIT_PN" && bash "$CREATE_BRANCH" --print-name "$PLAN_FILE_DATED")"
+assert_output "print-name: outputs derived branch name" "$EXPECTED_DERIVED_BRANCH" "$output"
+current="$(git -C "$GIT_PN" branch --show-current)"
+assert_output "print-name: main tree still on default branch (no checkout)" "main" "$current"
+branches="$(git -C "$GIT_PN" branch --format='%(refname:short)' | tr '\n' ' ')"
+assert_not_contains "print-name: derived branch was not created" "$branches" "$EXPECTED_DERIVED_BRANCH"
+
+# test 5c: --print-name strips the date prefix; a non-dated plan returns its stem unchanged
+echo ""
+echo "test 5c: --print-name on a non-dated plan returns the stem"
+output="$(cd "$GIT_PN" && bash "$CREATE_BRANCH" --print-name "docs/plans/no-date-name.md")"
+assert_output "print-name: non-dated plan returns stem" "no-date-name" "$output"
+
+# test 5d: --print-name with no plan path -> non-zero exit
+echo ""
+echo "test 5d: --print-name with missing plan path exits non-zero"
+rc=0
+(bash "$CREATE_BRANCH" --print-name >/dev/null 2>&1) || rc=$?
+assert_exit_nonzero "print-name: missing path exits non-zero" "$rc"
+
+if [ "$HG_AVAILABLE" -eq 1 ]; then
+    # test 6: hg repo with no active bookmark -> creates bookmark, outputs derived name
+    echo ""
+    echo "test 6: hg repo no active bookmark -> creates bookmark, outputs derived name"
+    HG_CB_DEFAULT="$(mk_tmp)"
+    make_hg_repo "$HG_CB_DEFAULT"
+    # seed one commit so there's a parent to attach the bookmark to
+    (
+        cd "$HG_CB_DEFAULT"
+        echo "seed" >seed.txt
+        hg add seed.txt >/dev/null
+        hg commit -m "seed" >/dev/null
+    )
+    output="$(cd "$HG_CB_DEFAULT" && bash "$CREATE_BRANCH" "$PLAN_FILE_DATED" 2>/dev/null | tail -n 1)"
+    assert_output "hg/no-active: outputs derived branch name" "$EXPECTED_DERIVED_BRANCH" "$output"
+    # verify the bookmark was created and is now active
+    book_list="$(cd "$HG_CB_DEFAULT" && hg book --template '{bookmark}\n')"
+    assert_contains "hg/no-active: bookmark created with derived name" "$book_list" "$EXPECTED_DERIVED_BRANCH"
+    active="$(cd "$HG_CB_DEFAULT" && hg log -r . --template '{activebookmark}\n')"
+    assert_output "hg/no-active: new bookmark is active" "$EXPECTED_DERIVED_BRANCH" "$active"
+
+    # test 7: hg repo already on a non-default bookmark -> outputs current, does NOT create derived bookmark
+    echo ""
+    echo "test 7: hg repo already on my-branch -> outputs current, does not create derived"
+    HG_CB_ON_BRANCH="$(mk_tmp)"
+    make_hg_repo "$HG_CB_ON_BRANCH"
+    (
+        cd "$HG_CB_ON_BRANCH"
+        echo "seed" >seed.txt
+        hg add seed.txt >/dev/null
+        hg commit -m "seed" >/dev/null
+        hg book my-branch >/dev/null
+    )
+    output="$(cd "$HG_CB_ON_BRANCH" && bash "$CREATE_BRANCH" "$PLAN_FILE_DATED" 2>/dev/null | tail -n 1)"
+    assert_output "hg/my-branch: outputs current bookmark" "my-branch" "$output"
+    active="$(cd "$HG_CB_ON_BRANCH" && hg log -r . --template '{activebookmark}\n')"
+    assert_output "hg/my-branch: still on my-branch" "my-branch" "$active"
+    # derived bookmark must NOT have been created
+    book_list="$(cd "$HG_CB_ON_BRANCH" && hg book --template '{bookmark}\n')"
+    assert_not_contains "hg/my-branch: derived bookmark not created" "$book_list" "$EXPECTED_DERIVED_BRANCH"
+
+    # test 8: hg repo with existing inactive bookmark (partial-run recovery)
+    # -- must 'hg update' it, not 'hg book' again (bookmark already exists)
+    echo ""
+    echo "test 8: hg repo with inactive derived bookmark -> hg update activates it"
+    HG_CB_REENTER="$(mk_tmp)"
+    make_hg_repo "$HG_CB_REENTER"
+    (
+        cd "$HG_CB_REENTER"
+        echo "seed" >seed.txt
+        hg add seed.txt >/dev/null
+        hg commit -m "seed" >/dev/null
+        # create the derived-name bookmark, then deactivate it to simulate
+        # a prior partial run leaving the bookmark but no active selection
+        hg book "$EXPECTED_DERIVED_BRANCH" >/dev/null
+        hg book -i >/dev/null
+    )
+    # record whereami before re-run so we can assert the working copy did not move
+    before_rev="$(cd "$HG_CB_REENTER" && hg log -r . --template '{node}\n')"
+    output="$(cd "$HG_CB_REENTER" && bash "$CREATE_BRANCH" "$PLAN_FILE_DATED" 2>&1 | tail -n 1)"
+    assert_output "hg/reenter: outputs derived branch name" "$EXPECTED_DERIVED_BRANCH" "$output"
+    active="$(cd "$HG_CB_REENTER" && hg log -r . --template '{activebookmark}\n')"
+    assert_output "hg/reenter: derived bookmark is now active (via hg update)" "$EXPECTED_DERIVED_BRANCH" "$active"
+    after_rev="$(cd "$HG_CB_REENTER" && hg log -r . --template '{node}\n')"
+    assert_output "hg/reenter: working copy did not move" "$before_rev" "$after_rev"
+
+    # test 9: hg repo with no commits yet -> hg book attaches to null parent, works fine
+    echo ""
+    echo "test 9: hg repo no-commit state -> bookmark created on null parent"
+    HG_CB_FRESH="$(mk_tmp)"
+    make_hg_repo "$HG_CB_FRESH"
+    output="$(cd "$HG_CB_FRESH" && bash "$CREATE_BRANCH" "$PLAN_FILE_DATED" 2>/dev/null | tail -n 1)"
+    assert_output "hg/fresh: outputs derived branch name" "$EXPECTED_DERIVED_BRANCH" "$output"
+    active="$(cd "$HG_CB_FRESH" && hg log -r . --template '{activebookmark}\n')"
+    assert_output "hg/fresh: derived bookmark is active" "$EXPECTED_DERIVED_BRANCH" "$active"
+
+    # test 9b: active bookmark IS the default (e.g. master/main) -> must NOT early-return;
+    # still create the derived bookmark. regression for the "any active bookmark counts as
+    # feature branch" bug that would otherwise skip bookmark creation in bookmark-based
+    # repos where the default line itself is held by an active bookmark.
+    echo ""
+    echo "test 9b: active default bookmark -> still creates derived bookmark"
+    HG_CB_ACTIVE_DEFAULT="$(mk_tmp)"
+    make_hg_repo "$HG_CB_ACTIVE_DEFAULT"
+    (
+        cd "$HG_CB_ACTIVE_DEFAULT"
+        # set up a remote/master revset alias so detect-branch.sh returns remote/master;
+        # create-branch.sh will strip the `remote/` prefix and compare against the
+        # active bookmark `master`, treating it as the default rather than a feature
+        cat >>.hg/hgrc <<'HGRC'
+[revsetalias]
+remote/master = bookmark("master")
+HGRC
+        echo "seed" >seed.txt
+        hg add seed.txt >/dev/null
+        hg commit -m "seed" >/dev/null
+        # create master as an active bookmark -- the default line is itself bookmarked
+        hg book master >/dev/null
+    )
+    # confirm active bookmark is master before we run create-branch
+    active_before="$(cd "$HG_CB_ACTIVE_DEFAULT" && hg log -r . --template '{activebookmark}\n')"
+    assert_output "hg/active-default: precondition -- master bookmark is active" "master" "$active_before"
+    output="$(cd "$HG_CB_ACTIVE_DEFAULT" && bash "$CREATE_BRANCH" "$PLAN_FILE_DATED" 2>/dev/null | tail -n 1)"
+    assert_output "hg/active-default: outputs derived bookmark, not master" "$EXPECTED_DERIVED_BRANCH" "$output"
+    book_list="$(cd "$HG_CB_ACTIVE_DEFAULT" && hg book --template '{bookmark}\n')"
+    assert_contains "hg/active-default: derived bookmark was created" "$book_list" "$EXPECTED_DERIVED_BRANCH"
+    active_after="$(cd "$HG_CB_ACTIVE_DEFAULT" && hg log -r . --template '{activebookmark}\n')"
+    assert_output "hg/active-default: derived bookmark is now active" "$EXPECTED_DERIVED_BRANCH" "$active_after"
+fi
+
+echo ""
+echo "testing VCS dispatch: stage-and-commit.sh"
+echo "========================================="
+
+# test 10: git repo, modified tracked file -> staged and committed
+echo ""
+echo "test 10: git repo, modified tracked file -> staged + committed"
+GIT_SC_MODIFIED="$(mk_tmp)"
+make_git_repo "$GIT_SC_MODIFIED" main
+(
+    cd "$GIT_SC_MODIFIED"
+    echo "initial" >README.md
+    git add README.md
+    git commit -q -m "seed readme"
+    echo "updated" >README.md
+)
+rc=0
+(cd "$GIT_SC_MODIFIED" && bash "$STAGE_AND_COMMIT" "update readme" README.md >/dev/null 2>&1) || rc=$?
+assert_output "git/modified: exit code 0" "0" "$rc"
+subject="$(git -C "$GIT_SC_MODIFIED" log -1 --pretty=%s)"
+assert_output "git/modified: commit subject matches" "update readme" "$subject"
+files="$(git -C "$GIT_SC_MODIFIED" show --name-only --pretty=format: HEAD | sed '/^$/d')"
+assert_output "git/modified: commit contains README.md" "README.md" "$files"
+
+# test 11: git repo, new untracked file -> added and committed
+echo ""
+echo "test 11: git repo, new untracked file -> added + committed"
+GIT_SC_NEW="$(mk_tmp)"
+make_git_repo "$GIT_SC_NEW" main
+(
+    cd "$GIT_SC_NEW"
+    echo "content" >newfile.txt
+)
+rc=0
+(cd "$GIT_SC_NEW" && bash "$STAGE_AND_COMMIT" "add newfile" newfile.txt >/dev/null 2>&1) || rc=$?
+assert_output "git/new: exit code 0" "0" "$rc"
+subject="$(git -C "$GIT_SC_NEW" log -1 --pretty=%s)"
+assert_output "git/new: commit subject matches" "add newfile" "$subject"
+files="$(git -C "$GIT_SC_NEW" show --name-only --pretty=format: HEAD | sed '/^$/d')"
+assert_output "git/new: commit contains newfile.txt" "newfile.txt" "$files"
+
+# test 11b: anything staged before the call must stay out of the commit and stay staged.
+# regression for the git arm committing the whole index instead of the listed files
+echo ""
+echo "test 11b: git repo, unrelated staged file -> not committed, still staged"
+GIT_SC_SCOPE="$(mk_tmp)"
+make_git_repo "$GIT_SC_SCOPE" main
+(
+    cd "$GIT_SC_SCOPE"
+    echo "a" >a.txt
+    echo "b" >b.txt
+    git add a.txt b.txt
+    git commit -q -m "seed both"
+    echo "a2" >a.txt
+    echo "b2" >b.txt
+    git add b.txt
+)
+rc=0
+(cd "$GIT_SC_SCOPE" && bash "$STAGE_AND_COMMIT" "commit a only" a.txt >/dev/null 2>&1) || rc=$?
+assert_output "git/scope: exit code 0" "0" "$rc"
+files="$(git -C "$GIT_SC_SCOPE" show --name-only --pretty=format: HEAD | sed '/^$/d')"
+assert_output "git/scope: commit contains only a.txt" "a.txt" "$files"
+staged="$(git -C "$GIT_SC_SCOPE" diff --cached --name-only)"
+assert_output "git/scope: b.txt is still staged afterwards" "b.txt" "$staged"
+
+# test 11c: a pre-commit hook that reformats and re-adds files writes into the temporary
+# index git builds for a path-scoped commit. without the trailing path-scoped reset the real
+# index keeps the pre-hook content and every commit leaves a phantom staged change behind
+echo ""
+echo "test 11c: git repo, restaging pre-commit hook -> no phantom staged change"
+GIT_SC_HOOK="$(mk_tmp)"
+HOOK_DIR="$(mk_tmp)"
+cat >"$HOOK_DIR/pre-commit" <<'HOOK'
+#!/bin/sh
+for f in $(git diff --cached --name-only --diff-filter=ACM -- "*.txt"); do
+    tr "a-z" "A-Z" <"$f" >"$f.tmp" && mv "$f.tmp" "$f"
+    git add -- "$f"
+done
+exit 0
+HOOK
+chmod +x "$HOOK_DIR/pre-commit"
+make_git_repo "$GIT_SC_HOOK" main
+(
+    cd "$GIT_SC_HOOK"
+    echo "seed" >seed.txt
+    git add seed.txt
+    git commit -q -m "seed"
+    git config core.hooksPath "$HOOK_DIR"
+    echo "src" >src.txt
+    echo "other" >other.txt
+    git add other.txt
+)
+rc=0
+(cd "$GIT_SC_HOOK" && bash "$STAGE_AND_COMMIT" "add src" src.txt >/dev/null 2>&1) || rc=$?
+assert_output "git/hook: exit code 0" "0" "$rc"
+assert_output "git/hook: HEAD holds the hook's formatting" "SRC" "$(git -C "$GIT_SC_HOOK" show HEAD:src.txt)"
+assert_output "git/hook: index agrees with HEAD" "SRC" "$(git -C "$GIT_SC_HOOK" show ":src.txt")"
+assert_output "git/hook: worktree agrees with HEAD" "SRC" "$(cat "$GIT_SC_HOOK/src.txt")"
+assert_output "git/hook: no phantom diff for the listed path" "" "$(git -C "$GIT_SC_HOOK" diff --name-only -- src.txt)"
+assert_output "git/hook: unrelated staged file survives" "other.txt" "$(git -C "$GIT_SC_HOOK" diff --cached --name-only)"
+assert_output "git/hook: hook did not reach the unrelated file" "other" "$(git -C "$GIT_SC_HOOK" show ":other.txt")"
+
+# test 11f: a hook may stage a path the caller never listed, such as a regenerated lockfile.
+# that path is committed from the temporary index, so reconciling only the listed paths would
+# leave it in the real index as a staged deletion of a file present in HEAD and the worktree
+echo ""
+echo "test 11f: git repo, hook stages an unlisted path -> index still agrees with HEAD"
+GIT_SC_OUTSIDE="$(mk_tmp)"
+OUTSIDE_HOOK_DIR="$(mk_tmp)"
+cat >"$OUTSIDE_HOOK_DIR/pre-commit" <<'HOOK'
+#!/bin/sh
+echo "generated" >gen.lock
+git add -- gen.lock
+exit 0
+HOOK
+chmod +x "$OUTSIDE_HOOK_DIR/pre-commit"
+make_git_repo "$GIT_SC_OUTSIDE" main
+(
+    cd "$GIT_SC_OUTSIDE"
+    echo "seed" >seed.txt
+    git add seed.txt
+    git commit -q -m "seed"
+    git config core.hooksPath "$OUTSIDE_HOOK_DIR"
+    echo "src" >src.txt
+)
+rc=0
+(cd "$GIT_SC_OUTSIDE" && bash "$STAGE_AND_COMMIT" "add src" src.txt >/dev/null 2>&1) || rc=$?
+assert_output "git/outside: exit code 0" "0" "$rc"
+files="$(git -C "$GIT_SC_OUTSIDE" show --name-only --pretty=format: HEAD | sed '/^$/d' | sort | tr '\n' ' ')"
+assert_output "git/outside: commit carries the hook's unlisted path" "gen.lock src.txt " "$files"
+assert_output "git/outside: no staged deletion left behind" "" "$(git -C "$GIT_SC_OUTSIDE" status --porcelain)"
+
+# test 11g: diff-tree reports paths from the repository root while reset resolves them against
+# the current directory, so a call made from a subdirectory must still reconcile the index
+echo ""
+echo "test 11g: git repo, called from a subdirectory -> index still agrees with HEAD"
+GIT_SC_SUBDIR="$(mk_tmp)"
+SUBDIR_HOOK_DIR="$(mk_tmp)"
+cat >"$SUBDIR_HOOK_DIR/pre-commit" <<'HOOK'
+#!/bin/sh
+root=$(git rev-parse --show-toplevel)
+echo "generated" >"$root/gen.lock"
+git add -- "$root/gen.lock"
+exit 0
+HOOK
+chmod +x "$SUBDIR_HOOK_DIR/pre-commit"
+make_git_repo "$GIT_SC_SUBDIR" main
+(
+    cd "$GIT_SC_SUBDIR"
+    mkdir -p services/foo
+    echo "seed" >seed.txt
+    git add seed.txt
+    git commit -q -m "seed"
+    git config core.hooksPath "$SUBDIR_HOOK_DIR"
+    echo "src" >services/foo/src.txt
+)
+rc=0
+(cd "$GIT_SC_SUBDIR/services/foo" && bash "$STAGE_AND_COMMIT" "feat: x" src.txt >/dev/null 2>&1) || rc=$?
+assert_output "git/subdir: exit code 0" "0" "$rc"
+files="$(git -C "$GIT_SC_SUBDIR" show --name-only --pretty=format: HEAD | sed '/^$/d' | sort | tr '\n' ' ')"
+assert_output "git/subdir: commit carries both paths" "gen.lock services/foo/src.txt " "$files"
+assert_output "git/subdir: no staged deletion left behind" "" "$(git -C "$GIT_SC_SUBDIR" status --porcelain)"
+
+# test 11h: file names are literal paths, not globs. without GIT_LITERAL_PATHSPECS a name
+# holding glob characters matches a different file, so the named one keeps a stale index entry
+# while unrelated staged work is silently unstaged
+echo ""
+echo "test 11h: git repo, glob characters in a filename -> matched literally"
+GIT_SC_GLOB="$(mk_tmp)"
+make_git_repo "$GIT_SC_GLOB" main
+(
+    cd "$GIT_SC_GLOB"
+    mkdir -p docs
+    echo "bracket" >'docs/task[1].md'
+    echo "plain" >docs/task1.md
+    git add docs
+    git commit -q -m "seed docs"
+    echo "bracket2" >'docs/task[1].md'
+    echo "plain2" >docs/task1.md
+    git add docs/task1.md
+)
+rc=0
+(cd "$GIT_SC_GLOB" && bash "$STAGE_AND_COMMIT" "update bracket" 'docs/task[1].md' >/dev/null 2>&1) || rc=$?
+assert_output "git/glob: exit code 0" "0" "$rc"
+files="$(git -C "$GIT_SC_GLOB" show --name-only --pretty=format: HEAD | sed '/^$/d')"
+assert_output "git/glob: commit contains only the named file" 'docs/task[1].md' "$files"
+assert_output "git/glob: unrelated staged file untouched" "docs/task1.md" "$(git -C "$GIT_SC_GLOB" diff --cached --name-only)"
+
+# test 11i: an empty path is a match-all git pathspec, so it has to be rejected before it
+# reaches git or the call silently commits the whole tree instead of failing
+echo ""
+echo "test 11i: git repo, empty file argument -> refused, nothing committed"
+GIT_SC_EMPTY="$(mk_tmp)"
+make_git_repo "$GIT_SC_EMPTY" main
+(
+    cd "$GIT_SC_EMPTY"
+    echo "a" >a.txt
+    echo "b" >b.txt
+    git add a.txt b.txt
+    git commit -q -m "seed"
+    echo "a2" >a.txt
+    echo "b2" >b.txt
+)
+before="$(git -C "$GIT_SC_EMPTY" rev-parse HEAD)"
+rc=0
+err="$( (cd "$GIT_SC_EMPTY" && bash "$STAGE_AND_COMMIT" "msg" "" 2>&1 >/dev/null) )" || rc=$?
+assert_exit_nonzero "git/empty: exits non-zero" "$rc"
+assert_contains "git/empty: names the empty argument" "$err" "empty file argument"
+assert_output "git/empty: no commit made" "$before" "$(git -C "$GIT_SC_EMPTY" rev-parse HEAD)"
+
+# test 11d: a rejected commit leaves its files staged. the next call must commit only its own
+# files rather than sweeping up the failed call's leftovers under the wrong message
+echo ""
+echo "test 11d: git repo, failed commit then disjoint call -> no carryover"
+GIT_SC_FAIL="$(mk_tmp)"
+FAIL_HOOK_DIR="$(mk_tmp)"
+cat >"$FAIL_HOOK_DIR/pre-commit" <<'HOOK'
+#!/bin/sh
+marker="$(git rev-parse --absolute-git-dir)/reject-once"
+if [ ! -f "$marker" ]; then
+    touch "$marker"
+    exit 1
+fi
+exit 0
+HOOK
+chmod +x "$FAIL_HOOK_DIR/pre-commit"
+make_git_repo "$GIT_SC_FAIL" main
+(
+    cd "$GIT_SC_FAIL"
+    echo "seed" >seed.txt
+    git add seed.txt
+    git commit -q -m "seed"
+    git config core.hooksPath "$FAIL_HOOK_DIR"
+    echo "one" >task1.txt
+)
+rc=0
+(cd "$GIT_SC_FAIL" && bash "$STAGE_AND_COMMIT" "feat: task 1" task1.txt >/dev/null 2>&1) || rc=$?
+assert_exit_nonzero "git/carryover: rejected commit exits non-zero" "$rc"
+assert_output "git/carryover: rejected files stay staged" "task1.txt" "$(git -C "$GIT_SC_FAIL" diff --cached --name-only)"
+(cd "$GIT_SC_FAIL" && echo "two" >task2.txt)
+rc=0
+(cd "$GIT_SC_FAIL" && bash "$STAGE_AND_COMMIT" "feat: task 2" task2.txt >/dev/null 2>&1) || rc=$?
+assert_output "git/carryover: second call exit code 0" "0" "$rc"
+files="$(git -C "$GIT_SC_FAIL" show --name-only --pretty=format: HEAD | sed '/^$/d')"
+assert_output "git/carryover: second commit contains only task2.txt" "task2.txt" "$files"
+assert_output "git/carryover: task1.txt still staged for the retry" "task1.txt" "$(git -C "$GIT_SC_FAIL" diff --cached --name-only)"
+
+# test 11e: a path-scoped commit must still record a removal, with the reset that follows
+# leaving no residue for the deleted path
+echo ""
+echo "test 11e: git repo, deleted tracked file -> removal recorded, scope held"
+GIT_SC_DEL="$(mk_tmp)"
+make_git_repo "$GIT_SC_DEL" main
+(
+    cd "$GIT_SC_DEL"
+    echo "seed" >seed.txt
+    echo "gone" >gone.txt
+    echo "other" >other.txt
+    git add seed.txt gone.txt
+    git commit -q -m "seed"
+    rm -f gone.txt
+    git add other.txt
+)
+rc=0
+(cd "$GIT_SC_DEL" && bash "$STAGE_AND_COMMIT" "remove gone" gone.txt >/dev/null 2>&1) || rc=$?
+assert_output "git/deleted: exit code 0" "0" "$rc"
+status="$(git -C "$GIT_SC_DEL" show --name-status --pretty=format: HEAD | sed '/^$/d')"
+assert_output "git/deleted: removal recorded" "D	gone.txt" "$status"
+assert_output "git/deleted: other.txt still staged" "other.txt" "$(git -C "$GIT_SC_DEL" diff --cached --name-only)"
+
+if [ "$HG_AVAILABLE" -eq 1 ]; then
+    # test 12: hg repo, modified tracked file -> committed via hg commit -A
+    echo ""
+    echo "test 12: hg repo, modified tracked file -> committed"
+    HG_SC_MODIFIED="$(mk_tmp)"
+    make_hg_repo "$HG_SC_MODIFIED"
+    (
+        cd "$HG_SC_MODIFIED"
+        echo "initial" >README.md
+        hg add README.md >/dev/null
+        hg commit -m "seed readme" >/dev/null
+        echo "updated" >README.md
+    )
+    rc=0
+    (cd "$HG_SC_MODIFIED" && bash "$STAGE_AND_COMMIT" "update readme" README.md >/dev/null 2>&1) || rc=$?
+    assert_output "hg/modified: exit code 0" "0" "$rc"
+    subject="$(cd "$HG_SC_MODIFIED" && hg log -l 1 -T '{desc}')"
+    assert_output "hg/modified: commit subject matches" "update readme" "$subject"
+    files="$(cd "$HG_SC_MODIFIED" && hg log -l 1 -T '{files}')"
+    assert_output "hg/modified: commit contains README.md" "README.md" "$files"
+
+    # test 13: hg repo, new untracked file -> committed WITHOUT 'abort: file not tracked'
+    # this is the critical case that catches the missing -A flag bug
+    echo ""
+    echo "test 13: hg repo, new untracked file -> committed via -A"
+    HG_SC_NEW="$(mk_tmp)"
+    make_hg_repo "$HG_SC_NEW"
+    (
+        cd "$HG_SC_NEW"
+        echo "seed" >seed.txt
+        hg add seed.txt >/dev/null
+        hg commit -m "seed" >/dev/null
+        echo "content" >newfile.txt
+    )
+    rc=0
+    (cd "$HG_SC_NEW" && bash "$STAGE_AND_COMMIT" "add newfile" newfile.txt >/dev/null 2>&1) || rc=$?
+    assert_output "hg/new: exit code 0 (no 'file not tracked' abort)" "0" "$rc"
+    subject="$(cd "$HG_SC_NEW" && hg log -l 1 -T '{desc}')"
+    assert_output "hg/new: commit subject matches" "add newfile" "$subject"
+    files="$(cd "$HG_SC_NEW" && hg log -l 1 -T '{files}')"
+    assert_output "hg/new: commit contains newfile.txt" "newfile.txt" "$files"
+
+    # test 13b: hg counterpart of 11b. hg has no index, so the unrelated change is a modified
+    # tracked file rather than a staged one; it must stay out of the commit and stay pending
+    echo ""
+    echo "test 13b: hg repo, unrelated modified file -> not committed, still pending"
+    HG_SC_SCOPE="$(mk_tmp)"
+    make_hg_repo "$HG_SC_SCOPE"
+    (
+        cd "$HG_SC_SCOPE"
+        echo "a" >a.txt
+        echo "b" >b.txt
+        hg add a.txt b.txt >/dev/null
+        hg commit -m "seed both" >/dev/null
+        echo "a2" >a.txt
+        echo "b2" >b.txt
+    )
+    rc=0
+    (cd "$HG_SC_SCOPE" && bash "$STAGE_AND_COMMIT" "commit a only" a.txt >/dev/null 2>&1) || rc=$?
+    assert_output "hg/scope: exit code 0" "0" "$rc"
+    files="$(cd "$HG_SC_SCOPE" && hg log -l 1 -T '{files}')"
+    assert_output "hg/scope: commit contains only a.txt" "a.txt" "$files"
+    assert_output "hg/scope: b.txt is still pending afterwards" "M b.txt" "$(cd "$HG_SC_SCOPE" && hg status)"
+
+    # test 14: hg repo with deleted tracked file -> hg commit -A records the removal
+    echo ""
+    echo "test 14: hg repo, deleted tracked file -> removal recorded"
+    HG_SC_DELETED="$(mk_tmp)"
+    make_hg_repo "$HG_SC_DELETED"
+    (
+        cd "$HG_SC_DELETED"
+        echo "seed" >seed.txt
+        echo "gone" >gone.txt
+        hg add seed.txt gone.txt >/dev/null
+        hg commit -m "seed" >/dev/null
+        rm -f gone.txt
+    )
+    rc=0
+    (cd "$HG_SC_DELETED" && bash "$STAGE_AND_COMMIT" "remove gone" gone.txt >/dev/null 2>&1) || rc=$?
+    assert_output "hg/deleted: exit code 0" "0" "$rc"
+    subject="$(cd "$HG_SC_DELETED" && hg log -l 1 -T '{desc}')"
+    assert_output "hg/deleted: commit subject matches" "remove gone" "$subject"
+    files="$(cd "$HG_SC_DELETED" && hg log -l 1 -T '{files}')"
+    assert_output "hg/deleted: commit contains gone.txt" "gone.txt" "$files"
+    # confirm gone.txt is not in the working copy manifest
+    manifest="$(cd "$HG_SC_DELETED" && hg manifest)"
+    case "$manifest" in
+    *gone.txt*)
+        echo "  FAIL: hg/deleted: gone.txt still in manifest"
+        failed=$((failed + 1))
+        ;;
+    *)
+        echo "  PASS: hg/deleted: gone.txt removed from manifest"
+        passed=$((passed + 1))
+        ;;
+    esac
+fi
+
+echo ""
+echo "testing VCS dispatch: run-codex.sh"
+echo "=================================="
+
+# create a codex stub that prints each argument on its own line and exits 0.
+# using a unique dir per run keeps the test hermetic against any real codex install.
+STUB_DIR="$(mk_tmp)"
+cat >"$STUB_DIR/codex" <<'STUB'
+#!/bin/bash
+for arg in "$@"; do
+    printf '%s\n' "$arg"
+done
+STUB
+chmod +x "$STUB_DIR/codex"
+
+# test 15: git repo -> codex called WITHOUT --skip-git-repo-check
+echo ""
+echo "test 15: git repo -> codex invocation has no --skip-git-repo-check"
+GIT_RC="$(mk_tmp)"
+make_git_repo "$GIT_RC" main
+stub_out="$(cd "$GIT_RC" && PATH="$STUB_DIR:$PATH" bash "$RUN_CODEX" "hello prompt")"
+assert_not_contains "git: no --skip-git-repo-check" "$stub_out" "--skip-git-repo-check"
+assert_contains "git: exec is present" "$stub_out" "exec"
+assert_contains "git: --sandbox is present" "$stub_out" "--sandbox"
+assert_not_contains "git: no -c model= when CODEX_MODEL unset (codex config decides)" "$stub_out" "model="
+assert_contains "git: -c model_reasoning_effort= flag present" "$stub_out" "model_reasoning_effort=xhigh"
+assert_contains "git: -c stream_idle_timeout_ms= flag present" "$stub_out" "stream_idle_timeout_ms=3600000"
+assert_not_contains "git: no project_doc flag (dead Codex config key, removed)" "$stub_out" "project_doc"
+assert_contains "git: prompt is passed through" "$stub_out" "hello prompt"
+
+# test 15b: git repo with CODEX_MODEL override -> model is overridden
+echo ""
+echo "test 15b: git repo with CODEX_MODEL override"
+stub_out="$(cd "$GIT_RC" && CODEX_MODEL=gpt-5.6 PATH="$STUB_DIR:$PATH" bash "$RUN_CODEX" "hello prompt")"
+assert_contains "git: CODEX_MODEL env var overrides model" "$stub_out" "model=gpt-5.6"
+
+# test 15c: CODEX_NO_OVERRIDES=1 suppresses all -c flags -- for proxies that reject them
+echo ""
+echo "test 15c: CODEX_NO_OVERRIDES=1 suppresses -c overrides"
+stub_out="$(cd "$GIT_RC" && CODEX_NO_OVERRIDES=1 PATH="$STUB_DIR:$PATH" bash "$RUN_CODEX" "hello prompt")"
+assert_not_contains "git: no -c model= when CODEX_NO_OVERRIDES=1" "$stub_out" "model="
+assert_not_contains "git: no -c model_reasoning_effort= when CODEX_NO_OVERRIDES=1" "$stub_out" "model_reasoning_effort"
+assert_not_contains "git: no -c stream_idle_timeout_ms= when CODEX_NO_OVERRIDES=1" "$stub_out" "stream_idle_timeout_ms"
+# non -c args (exec / --sandbox / prompt) must still be there
+assert_contains "git: exec still present with CODEX_NO_OVERRIDES=1" "$stub_out" "exec"
+assert_contains "git: --sandbox still present with CODEX_NO_OVERRIDES=1" "$stub_out" "--sandbox"
+assert_contains "git: prompt still passed with CODEX_NO_OVERRIDES=1" "$stub_out" "hello prompt"
+
+# test 15d: only the literal "1" activates suppression -- other values must NOT silently turn it on.
+# guards against the "set to 1 to enable" semantic surprise where someone tries =0 to disable
+# and accidentally enables it.
+echo ""
+echo "test 15d: CODEX_NO_OVERRIDES=0 does NOT activate suppression"
+stub_out="$(cd "$GIT_RC" && CODEX_NO_OVERRIDES=0 PATH="$STUB_DIR:$PATH" bash "$RUN_CODEX" "hello prompt")"
+assert_contains "git: -c model_reasoning_effort= present when CODEX_NO_OVERRIDES=0" "$stub_out" "model_reasoning_effort=xhigh"
+
+echo ""
+echo "test 15e: CODEX_NO_OVERRIDES=false does NOT activate suppression"
+stub_out="$(cd "$GIT_RC" && CODEX_NO_OVERRIDES=false PATH="$STUB_DIR:$PATH" bash "$RUN_CODEX" "hello prompt")"
+assert_contains "git: -c model_reasoning_effort= present when CODEX_NO_OVERRIDES=false" "$stub_out" "model_reasoning_effort=xhigh"
+
+echo ""
+echo "test 15f: CODEX_NO_OVERRIDES=no does NOT activate suppression"
+stub_out="$(cd "$GIT_RC" && CODEX_NO_OVERRIDES=no PATH="$STUB_DIR:$PATH" bash "$RUN_CODEX" "hello prompt")"
+assert_contains "git: -c model_reasoning_effort= present when CODEX_NO_OVERRIDES=no" "$stub_out" "model_reasoning_effort=xhigh"
+
+if [ "$HG_AVAILABLE" -eq 1 ]; then
+    # test 16: hg repo -> codex called WITH --skip-git-repo-check positioned
+    # right after 'exec' (before --sandbox)
+    echo ""
+    echo "test 16: hg repo -> codex has --skip-git-repo-check immediately after exec"
+    HG_RC="$(mk_tmp)"
+    make_hg_repo "$HG_RC"
+    stub_out="$(cd "$HG_RC" && PATH="$STUB_DIR:$PATH" bash "$RUN_CODEX" "hello prompt")"
+    assert_contains "hg: --skip-git-repo-check flag is present" "$stub_out" "--skip-git-repo-check"
+    assert_contains "hg: exec is present" "$stub_out" "exec"
+    assert_contains "hg: --sandbox is present" "$stub_out" "--sandbox"
+    assert_not_contains "hg: no -c model= when CODEX_MODEL unset" "$stub_out" "model="
+    assert_contains "hg: -c model_reasoning_effort= flag present" "$stub_out" "model_reasoning_effort=xhigh"
+    assert_not_contains "hg: no project_doc flag (dead Codex config key, removed)" "$stub_out" "project_doc"
+    assert_contains "hg: prompt is passed through" "$stub_out" "hello prompt"
+
+    # verify ordering: exec, then --skip-git-repo-check, then --sandbox
+    # the stub outputs one arg per line, so we can directly index by line
+    line1="$(printf '%s\n' "$stub_out" | sed -n '1p')"
+    line2="$(printf '%s\n' "$stub_out" | sed -n '2p')"
+    line3="$(printf '%s\n' "$stub_out" | sed -n '3p')"
+    line4="$(printf '%s\n' "$stub_out" | sed -n '4p')"
+    assert_output "hg: arg 1 is 'exec'" "exec" "$line1"
+    assert_output "hg: arg 2 is '--skip-git-repo-check'" "--skip-git-repo-check" "$line2"
+    assert_output "hg: arg 3 is '--sandbox'" "--sandbox" "$line3"
+    assert_output "hg: arg 4 is 'read-only'" "read-only" "$line4"
+fi
+
+echo ""
+echo "testing VCS dispatch: non-VCS dir propagation (set -e)"
+echo "======================================================"
+
+# test 17-20: each of the four exec scripts must exit non-zero in a non-VCS dir
+# (detect-vcs.sh exits 1; set -e in the caller must propagate without falling through
+# to the git/hg code paths)
+EMPTY_DIR="$(mk_tmp)"
+
+echo ""
+echo "test 17: detect-branch.sh exits non-zero in empty dir"
+rc=0
+(cd "$EMPTY_DIR" && bash "$DETECT_BRANCH" >/dev/null 2>&1) || rc=$?
+assert_exit_nonzero "detect-branch.sh: empty dir exits non-zero" "$rc"
+
+echo ""
+echo "test 18: create-branch.sh exits non-zero in empty dir"
+rc=0
+(cd "$EMPTY_DIR" && bash "$CREATE_BRANCH" "docs/plans/20260329-feature-name.md" >/dev/null 2>&1) || rc=$?
+assert_exit_nonzero "create-branch.sh: empty dir exits non-zero" "$rc"
+
+echo ""
+echo "test 19: stage-and-commit.sh exits non-zero in empty dir"
+rc=0
+(cd "$EMPTY_DIR" && bash "$STAGE_AND_COMMIT" "msg" file.txt >/dev/null 2>&1) || rc=$?
+assert_exit_nonzero "stage-and-commit.sh: empty dir exits non-zero" "$rc"
+
+echo ""
+echo "test 20: run-codex.sh exits non-zero in empty dir"
+rc=0
+(cd "$EMPTY_DIR" && PATH="$STUB_DIR:$PATH" bash "$RUN_CODEX" "prompt" >/dev/null 2>&1) || rc=$?
+assert_exit_nonzero "run-codex.sh: empty dir exits non-zero" "$rc"
+
+echo ""
+echo "testing VCS dispatch: move-plan.sh"
+echo "=================================="
+
+PLAN_NAME="20260329-feature-name.md"
+EXPECTED_MOVE_SUBJECT="docs: move completed plan $PLAN_NAME to completed/"
+
+# test 21: git repo, finished plan -> moved into completed/ and committed as a rename
+echo ""
+echo "test 21: git repo, plan moved into completed/ + committed"
+GIT_MV="$(mk_tmp)"
+make_git_repo "$GIT_MV" main
+(
+    cd "$GIT_MV"
+    mkdir -p docs/plans
+    echo "# plan" >"docs/plans/$PLAN_NAME"
+    git add "docs/plans/$PLAN_NAME"
+    git commit -q -m "add plan"
+)
+commits_before="$(git -C "$GIT_MV" rev-list --count HEAD)"
+rc=0
+(cd "$GIT_MV" && bash "$MOVE_PLAN" "docs/plans/$PLAN_NAME" >/dev/null 2>&1) || rc=$?
+assert_output "git/move: exit code 0" "0" "$rc"
+[ ! -f "$GIT_MV/docs/plans/$PLAN_NAME" ] && orig="gone" || orig="present"
+assert_output "git/move: original path removed" "gone" "$orig"
+[ -f "$GIT_MV/docs/plans/completed/$PLAN_NAME" ] && dest="present" || dest="missing"
+assert_output "git/move: file now under completed/" "present" "$dest"
+subject="$(git -C "$GIT_MV" log -1 --pretty=%s)"
+assert_output "git/move: commit subject matches" "$EXPECTED_MOVE_SUBJECT" "$subject"
+commits_after="$(git -C "$GIT_MV" rev-list --count HEAD)"
+assert_output "git/move: exactly one new commit" "$((commits_before + 1))" "$commits_after"
+files="$(git -C "$GIT_MV" show --name-status --pretty=format: HEAD | sed '/^$/d')"
+assert_contains "git/move: commit records completed/ path" "$files" "docs/plans/completed/$PLAN_NAME"
+
+# test 22: git repo, re-run on the now-missing original path -> no-op exit 0, no new commit
+echo ""
+echo "test 22: git repo, re-run on already-moved plan -> no-op"
+rc=0
+out="$(cd "$GIT_MV" && bash "$MOVE_PLAN" "docs/plans/$PLAN_NAME" 2>&1)" || rc=$?
+assert_output "git/move-again: exit code 0 (no-op)" "0" "$rc"
+assert_contains "git/move-again: reports missing file" "$out" "plan file not found"
+commits_after2="$(git -C "$GIT_MV" rev-list --count HEAD)"
+assert_output "git/move-again: no additional commit" "$((commits_before + 1))" "$commits_after2"
+
+# test 23: path already under completed/ -> no-op, file untouched, no commit
+echo ""
+echo "test 23: git repo, path already under completed/ -> no-op"
+GIT_MV_DONE="$(mk_tmp)"
+make_git_repo "$GIT_MV_DONE" main
+(
+    cd "$GIT_MV_DONE"
+    mkdir -p docs/plans/completed
+    echo "# plan" >"docs/plans/completed/$PLAN_NAME"
+    git add "docs/plans/completed/$PLAN_NAME"
+    git commit -q -m "add completed plan"
+)
+commits_before="$(git -C "$GIT_MV_DONE" rev-list --count HEAD)"
+rc=0
+out="$(cd "$GIT_MV_DONE" && bash "$MOVE_PLAN" "docs/plans/completed/$PLAN_NAME" 2>&1)" || rc=$?
+assert_output "git/already-completed: exit code 0" "0" "$rc"
+assert_contains "git/already-completed: reports already under completed/" "$out" "already under completed/"
+[ -f "$GIT_MV_DONE/docs/plans/completed/$PLAN_NAME" ] && still="present" || still="missing"
+assert_output "git/already-completed: file untouched" "present" "$still"
+commits_after="$(git -C "$GIT_MV_DONE" rev-list --count HEAD)"
+assert_output "git/already-completed: no new commit" "$commits_before" "$commits_after"
+
+if [ "$HG_AVAILABLE" -eq 1 ]; then
+    # test 24: hg repo, finished plan -> moved into completed/ and committed
+    echo ""
+    echo "test 24: hg repo, plan moved into completed/ + committed"
+    HG_MV="$(mk_tmp)"
+    make_hg_repo "$HG_MV"
+    (
+        cd "$HG_MV"
+        mkdir -p docs/plans
+        echo "# plan" >"docs/plans/$PLAN_NAME"
+        hg add "docs/plans/$PLAN_NAME" >/dev/null
+        hg commit -m "add plan" >/dev/null
+    )
+    rc=0
+    (cd "$HG_MV" && bash "$MOVE_PLAN" "docs/plans/$PLAN_NAME" >/dev/null 2>&1) || rc=$?
+    assert_output "hg/move: exit code 0" "0" "$rc"
+    [ ! -f "$HG_MV/docs/plans/$PLAN_NAME" ] && orig="gone" || orig="present"
+    assert_output "hg/move: original path removed" "gone" "$orig"
+    [ -f "$HG_MV/docs/plans/completed/$PLAN_NAME" ] && dest="present" || dest="missing"
+    assert_output "hg/move: file now under completed/" "present" "$dest"
+    subject="$(cd "$HG_MV" && hg log -l 1 -T '{desc}')"
+    assert_output "hg/move: commit subject matches" "$EXPECTED_MOVE_SUBJECT" "$subject"
+    files="$(cd "$HG_MV" && hg log -l 1 -T '{files}')"
+    assert_contains "hg/move: commit records completed/ path" "$files" "docs/plans/completed/$PLAN_NAME"
+fi
+
+# test 25: destination already exists -> refuse to overwrite, exit non-zero, no commit
+echo ""
+echo "test 25: git repo, destination already exists -> refuse, no clobber"
+GIT_MV_CLOBBER="$(mk_tmp)"
+make_git_repo "$GIT_MV_CLOBBER" main
+(
+    cd "$GIT_MV_CLOBBER"
+    mkdir -p docs/plans/completed
+    echo "# new plan" >"docs/plans/$PLAN_NAME"
+    echo "# OLD COMPLETED" >"docs/plans/completed/$PLAN_NAME"
+    git add docs/plans
+    git commit -q -m "plan plus pre-existing completed"
+)
+commits_before="$(git -C "$GIT_MV_CLOBBER" rev-list --count HEAD)"
+rc=0
+(cd "$GIT_MV_CLOBBER" && bash "$MOVE_PLAN" "docs/plans/$PLAN_NAME" >/dev/null 2>&1) || rc=$?
+assert_exit_nonzero "git/clobber: refuses with non-zero exit" "$rc"
+[ -f "$GIT_MV_CLOBBER/docs/plans/$PLAN_NAME" ] && src="present" || src="gone"
+assert_output "git/clobber: source plan left in place" "present" "$src"
+dest_content="$(cat "$GIT_MV_CLOBBER/docs/plans/completed/$PLAN_NAME")"
+assert_output "git/clobber: existing destination not overwritten" "# OLD COMPLETED" "$dest_content"
+commits_after="$(git -C "$GIT_MV_CLOBBER" rev-list --count HEAD)"
+assert_output "git/clobber: no new commit" "$commits_before" "$commits_after"
+
+# Untracked completed plans have no removed source path to stage. Preserve
+# unrelated pending work while committing only the new destination, Git and Hg.
+for move_vcs in git hg; do
+    if [ "$move_vcs" = hg ] && [ "$HG_AVAILABLE" -ne 1 ]; then continue; fi
+    MV_NEW="$(mk_tmp)"
+    if [ "$move_vcs" = git ]; then make_git_repo "$MV_NEW" main; else make_hg_repo "$MV_NEW"; fi
+    mkdir -p "$MV_NEW/docs/plans"
+    printf '# complete\n' > "$MV_NEW/docs/plans/untracked plan.md"
+    rc=0
+    (cd "$MV_NEW" && bash "$MOVE_PLAN" "$MV_NEW/docs/plans/untracked plan.md" >/dev/null 2>&1) || rc=$?
+    assert_output "$move_vcs/untracked-move: exit 0" "0" "$rc"
+    [ -f "$MV_NEW/docs/plans/completed/untracked plan.md" ] && dest=present || dest=missing
+    assert_output "$move_vcs/untracked-move: destination exists" present "$dest"
+    if [ "$move_vcs" = git ]; then
+        files="$(git -C "$MV_NEW" show --name-only --pretty=format: HEAD | sed '/^$/d')"
+    else
+        files="$(cd "$MV_NEW" && hg log -l 1 -T '{files}')"
+    fi
+    assert_output "$move_vcs/untracked-move: explicit destination only" "docs/plans/completed/untracked plan.md" "$files"
+done
+
+# summary
+echo ""
+echo "======================================"
+echo "results: $passed passed, $failed failed"
+
+if [ "$failed" -gt 0 ]; then
+    exit 1
+fi

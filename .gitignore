@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.test-results/
+integrations/opencode/skill-eval/node_modules/
+node_modules/
+.DS_Store
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+local-reports/
+local-evidence/
+installation-backups/

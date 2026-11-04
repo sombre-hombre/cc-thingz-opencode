@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "configRoot": "opencode",
+  "skills": [
+    {"id": "brainstorm", "source": "plugins/brainstorm/skills/brainstorm", "target": "skills/brainstorm"},
+    {"id": "pr", "source": "plugins/review/skills/pr", "target": "skills/pr"},
+    {"id": "git-review", "source": "plugins/review/skills/git-review", "target": "skills/git-review"},
+    {"id": "writing-style", "source": "plugins/review/skills/writing-style", "target": "skills/writing-style"},
+    {"id": "exec", "source": "plugins/planning/skills/exec", "target": "skills/exec"},
+    {"id": "make", "source": "plugins/planning/skills/make", "target": "skills/make"},
+    {"id": "release", "upstreamID": "new", "source": "plugins/release-tools/skills/release", "target": "skills/release"},
+    {"id": "last-tag", "source": "plugins/release-tools/skills/last-tag", "target": "skills/last-tag"},
+    {"id": "ask-codex", "source": "plugins/thinking-tools/skills/ask-codex", "target": "skills/ask-codex"},
+    {"id": "dialectic", "source": "plugins/thinking-tools/skills/dialectic", "target": "skills/dialectic"},
+    {"id": "root-cause-investigator", "source": "plugins/thinking-tools/skills/root-cause-investigator", "target": "skills/root-cause-investigator"},
+    {"id": "learn", "source": "plugins/workflow/skills/learn", "target": "skills/learn"},
+    {"id": "clarify", "source": "plugins/workflow/skills/clarify", "target": "skills/clarify"},
+    {"id": "wrong", "source": "plugins/workflow/skills/wrong", "target": "skills/wrong"},
+    {"id": "md-copy", "source": "plugins/workflow/skills/md-copy", "target": "skills/md-copy"},
+    {"id": "txt-copy", "source": "plugins/workflow/skills/txt-copy", "target": "skills/txt-copy"},
+    {"id": "backlog", "source": "plugins/workflow/skills/backlog", "target": "skills/backlog"}
+  ],
+  "commands": [
+    {"source": "commands/brainstorm.md", "target": "commands/brainstorm.md"},
+    {"source": "commands/pr.md", "target": "commands/pr.md"},
+    {"source": "commands/git-review.md", "target": "commands/git-review.md"},
+    {"source": "commands/writing-style.md", "target": "commands/writing-style.md"},
+    {"source": "commands/exec.md", "target": "commands/exec.md"},
+    {"source": "plugins/planning/commands/make.md", "target": "commands/make.md"},
+    {"source": "commands/release.md", "target": "commands/release.md"},
+    {"source": "commands/last-tag.md", "target": "commands/last-tag.md"},
+    {"source": "commands/ask-codex.md", "target": "commands/ask-codex.md"},
+    {"source": "commands/dialectic.md", "target": "commands/dialectic.md"},
+    {"source": "commands/root-cause-investigator.md", "target": "commands/root-cause-investigator.md"},
+    {"source": "commands/learn.md", "target": "commands/learn.md"},
+    {"source": "commands/clarify.md", "target": "commands/clarify.md"},
+    {"source": "commands/wrong.md", "target": "commands/wrong.md"},
+    {"source": "commands/md-copy.md", "target": "commands/md-copy.md"},
+    {"source": "commands/txt-copy.md", "target": "commands/txt-copy.md"},
+    {"source": "commands/backlog.md", "target": "commands/backlog.md"},
+    {"source": "commands/review-plan.md", "target": "commands/review-plan.md"}
+  ],
+  "agents": [
+    {"source": "plugins/planning/agents/plan-review.md", "target": "agents/plan-review.md"},
+    {"source": "plugins/planning/agents/external-plan-review.md", "target": "agents/external-plan-review.md"}
+  ],
+  "plugins": [
+    {"id": "cc-thingz.skill-eval", "source": "integrations/opencode/skill-eval", "target": "plugins/cc-thingz-skill-eval"}
+  ],
+  "retired": ["plugins/plan-annotate-hook.ts", "scripts/planning"],
+  "snapshotOnly": ["data"],
+  "legacyReplaceable": ["skills/brainstorm", "skills/exec", "skills/pr", "skills/git-review", "skills/writing-style", "skills/root-cause-investigator", "commands/make.md", "agents/plan-review.md", "plugins/plan-annotate-hook.ts", "scripts/planning"],
+  "excluded": ["plugins/*/hooks/*", "plugins/*/.claude-plugin/*"]
+}

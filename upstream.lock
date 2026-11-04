@@ -1,0 +1,8 @@
+{
+  "url": "https://github.com/umputun/cc-thingz.git",
+  "commit": "f84b93ca0f04a1406bdbb834d8f1ed1946996d1e",
+  "tree": "e00533fe65f8e7b692878a7a0ff6f0955803e866",
+  "license": "MIT",
+  "imported_paths": ["LICENSE", "plugins/", "tests/test-*.sh"],
+  "history": "clean public snapshot; upstream source is referenced by URL and commit, not included as Git ancestry"
+}
